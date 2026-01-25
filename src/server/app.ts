@@ -69,6 +69,8 @@ export const app = new Elysia()
         const prefs = db.prepare('SELECT * FROM user_preferences WHERE user_id = ?').get(userId) as any;
         const accepted = JSON.parse(prefs?.accepted_titles || '[]');
         const rejected = JSON.parse(prefs?.rejected_titles || '[]');
+        const acceptedLoc = JSON.parse(prefs?.accepted_locations || '[]');
+        const rejectedLoc = JSON.parse(prefs?.rejected_locations || '[]');
 
         // Get all jobs with status for this user
         // We filter by search and status in SQL for performance
@@ -108,6 +110,14 @@ export const app = new Elysia()
 
           if (rejected.some((r: string) => matchesKeyword(r))) return false;
           if (accepted.length > 0 && !accepted.some((a: string) => matchesKeyword(a))) return false;
+
+          // Location filtering
+          const location = job.location.toLowerCase();
+          const matchesLocation = (keyword: string) => location.includes(keyword.toLowerCase());
+
+          if (rejectedLoc.some((r: string) => matchesLocation(r))) return false;
+          if (acceptedLoc.length > 0 && !acceptedLoc.some((a: string) => matchesLocation(a))) return false;
+
           return true;
         });
 
@@ -142,16 +152,24 @@ export const app = new Elysia()
         return {
           accepted_titles: JSON.parse(prefs?.accepted_titles || '[]'),
           rejected_titles: JSON.parse(prefs?.rejected_titles || '[]'),
+          accepted_locations: JSON.parse(prefs?.accepted_locations || '[]'),
+          rejected_locations: JSON.parse(prefs?.rejected_locations || '[]'),
         };
       })
       .patch('/preferences', ({ body, user }) => {
         const userId = (user as any).id;
-        const { accepted_titles, rejected_titles } = body as any;
+        const { accepted_titles, rejected_titles, accepted_locations, rejected_locations } = body as any;
         db.prepare(`
           UPDATE user_preferences 
-          SET accepted_titles = ?, rejected_titles = ?
+          SET accepted_titles = ?, rejected_titles = ?, accepted_locations = ?, rejected_locations = ?
           WHERE user_id = ?
-        `).run(JSON.stringify(accepted_titles), JSON.stringify(rejected_titles), userId);
+        `).run(
+          JSON.stringify(accepted_titles), 
+          JSON.stringify(rejected_titles), 
+          JSON.stringify(accepted_locations || []), 
+          JSON.stringify(rejected_locations || []), 
+          userId
+        );
         return { success: true };
       })
       .get('/stats', ({ user }) => {
@@ -187,5 +205,23 @@ export const app = new Elysia()
           .map(([keyword, count]) => ({ keyword, count }));
           
         return { keywords: sortedKeywords };
+      })
+      .get('/locations', () => {
+        const jobs = db.prepare('SELECT location FROM jobs').all() as { location: string }[];
+        const locationCounts = new Map<string, number>();
+        
+        for (const job of jobs) {
+          // Simple normalization: trim
+          const loc = job.location.trim();
+          locationCounts.set(loc, (locationCounts.get(loc) || 0) + 1);
+        }
+        
+        // Sort by frequency and take top 25
+        const sortedLocations = Array.from(locationCounts.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 25)
+          .map(([location, count]) => ({ location, count }));
+          
+        return { locations: sortedLocations };
       })
   );

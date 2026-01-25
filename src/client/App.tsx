@@ -21,11 +21,19 @@ function App() {
   const [view, setView] = useState<'jobs' | 'settings' | 'stats'>('jobs');
   const [jobs, setJobs] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
-  const [prefs, setPrefs] = useState<{ accepted_titles: string[], rejected_titles: string[] }>({
+  const [prefs, setPrefs] = useState<{ 
+    accepted_titles: string[], 
+    rejected_titles: string[],
+    accepted_locations: string[],
+    rejected_locations: string[]
+  }>({
     accepted_titles: [],
-    rejected_titles: []
+    rejected_titles: [],
+    accepted_locations: [],
+    rejected_locations: []
   });
   const [suggestedKeywords, setSuggestedKeywords] = useState<{ keyword: string, count: number }[]>([]);
+  const [suggestedLocations, setSuggestedLocations] = useState<{ location: string, count: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [authView, setAuthView] = useState<'login' | 'signup'>('login');
   const [authForm, setAuthForm] = useState({ username: '', password: '' });
@@ -56,6 +64,8 @@ function App() {
         setPrefs(res.data);
         const keywordsRes = await api.get('/keywords');
         setSuggestedKeywords(keywordsRes.data.keywords);
+        const locationsRes = await api.get('/locations');
+        setSuggestedLocations(locationsRes.data.locations);
       }
     } catch (e) {
       console.error(e);
@@ -438,6 +448,92 @@ function App() {
                       const val = (e.target as HTMLInputElement).value;
                       if (val) {
                         updatePrefs({ ...prefs, rejected_titles: [...prefs.rejected_titles, val] });
+                        (e.target as HTMLInputElement).value = '';
+                      }
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl">
+                <h3 className="text-xl font-bold text-white mb-2">Accepted Locations</h3>
+                <p className="text-slate-500 text-sm mb-6">Only jobs in these locations will be shown (OR logic)</p>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {prefs.accepted_locations?.map(l => (
+                    <span key={l} className="bg-indigo-600/20 text-indigo-400 px-3 py-1.5 rounded-lg flex items-center gap-2 border border-indigo-500/30">
+                      {l}
+                      <Trash2 
+                        size={14} 
+                        className="cursor-pointer hover:text-red-400" 
+                        onClick={() => updatePrefs({ ...prefs, accepted_locations: (prefs.accepted_locations || []).filter(x => x !== l) })}
+                      />
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500"
+                    placeholder="e.g. New York, Remote"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const val = (e.target as HTMLInputElement).value;
+                        if (val) {
+                          updatePrefs({ ...prefs, accepted_locations: [...(prefs.accepted_locations || []), val] });
+                          (e.target as HTMLInputElement).value = '';
+                        }
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl">
+                <h3 className="text-xl font-bold text-white mb-2">Common Locations</h3>
+                <p className="text-slate-500 text-sm mb-6">Click to add to your accepted list</p>
+                <div className="flex flex-wrap gap-2">
+                  {suggestedLocations.map(({ location, count }) => {
+                    const isSelected = prefs.accepted_locations?.some(l => l.toLowerCase() === location.toLowerCase());
+                    if (isSelected) return null;
+                    
+                    return (
+                      <button
+                        key={location}
+                        onClick={() => updatePrefs({ ...prefs, accepted_locations: [...(prefs.accepted_locations || []), location] })}
+                        className="bg-slate-800 hover:bg-indigo-600/20 hover:text-indigo-400 hover:border-indigo-500/30 border border-slate-700 text-slate-300 px-3 py-1.5 rounded-lg text-sm transition-all flex items-center gap-2"
+                      >
+                        {location}
+                        <span className="text-xs bg-slate-950 px-1.5 py-0.5 rounded text-slate-500">{count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl">
+                <h3 className="text-xl font-bold text-white mb-2">Rejected Locations</h3>
+                <p className="text-slate-500 text-sm mb-6">Jobs in these locations will be filtered out</p>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {prefs.rejected_locations?.map(l => (
+                    <span key={l} className="bg-red-600/20 text-red-400 px-3 py-1.5 rounded-lg flex items-center gap-2 border border-red-500/30">
+                      {l}
+                      <Trash2 
+                        size={14} 
+                        className="cursor-pointer hover:text-red-300" 
+                        onClick={() => updatePrefs({ ...prefs, rejected_locations: (prefs.rejected_locations || []).filter(x => x !== l) })}
+                      />
+                    </span>
+                  ))}
+                </div>
+                <input 
+                  type="text" 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white outline-none focus:border-red-500"
+                  placeholder="e.g. San Francisco"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const val = (e.target as HTMLInputElement).value;
+                      if (val) {
+                        updatePrefs({ ...prefs, rejected_locations: [...(prefs.rejected_locations || []), val] });
                         (e.target as HTMLInputElement).value = '';
                       }
                     }

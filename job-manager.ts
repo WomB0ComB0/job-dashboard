@@ -55,6 +55,8 @@ interface JobsDatabase {
 interface UserPreferences {
   acceptedTitles: Set<string>;
   rejectedTitles: Set<string>;
+  acceptedLocations: Set<string>;
+  rejectedLocations: Set<string>;
   presets?: FilterPreset[];
 }
 
@@ -65,6 +67,8 @@ interface FilterPreset {
   name: string;
   acceptedTitles: string[];
   rejectedTitles: string[];
+  acceptedLocations: string[];
+  rejectedLocations: string[];
   createdAt: string;
 }
 
@@ -214,15 +218,19 @@ async function loadUserPreferences(): Promise<UserPreferences> {
   return {
     acceptedTitles: new Set(JSON.parse(prefs?.accepted_titles || "[]")),
     rejectedTitles: new Set(JSON.parse(prefs?.rejected_titles || "[]")),
+    acceptedLocations: new Set(JSON.parse(prefs?.accepted_locations || "[]")),
+    rejectedLocations: new Set(JSON.parse(prefs?.rejected_locations || "[]")),
   };
 }
 
 async function saveUserPreferences(prefs: UserPreferences): Promise<void> {
   const accepted = Array.from(prefs.acceptedTitles);
   const rejected = Array.from(prefs.rejectedTitles);
+  const acceptedLoc = Array.from(prefs.acceptedLocations);
+  const rejectedLoc = Array.from(prefs.rejectedLocations);
   db.run(
-    "INSERT INTO user_preferences (user_id, accepted_titles, rejected_titles) VALUES (1, ?, ?) ON CONFLICT(user_id) DO UPDATE SET accepted_titles = excluded.accepted_titles, rejected_titles = excluded.rejected_titles",
-    [JSON.stringify(accepted), JSON.stringify(rejected)]
+    "INSERT INTO user_preferences (user_id, accepted_titles, rejected_titles, accepted_locations, rejected_locations) VALUES (1, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET accepted_titles = excluded.accepted_titles, rejected_titles = excluded.rejected_titles, accepted_locations = excluded.accepted_locations, rejected_locations = excluded.rejected_locations",
+    [JSON.stringify(accepted), JSON.stringify(rejected), JSON.stringify(acceptedLoc), JSON.stringify(rejectedLoc)]
   );
 }
 
@@ -265,7 +273,7 @@ async function loadJobsDatabase(): Promise<JobsDatabase> {
   // Get current index from a simple settings table or just default to 0
   // For now, let's keep it in memory or use a small metadata table
   const settings = db.prepare("SELECT accepted_titles FROM user_preferences WHERE user_id = 0").get() as any; 
-  const currentIndex = settings ? parseInt(settings.accepted_titles) : 0;
+  const currentIndex = settings ? Number.parseInt(settings.accepted_titles) : 0;
 
   return {
     unprocessed: mappedUnprocessed,
@@ -288,8 +296,8 @@ function parseAgeInDays(ageText: string): number | null {
   const trimmed = ageText.trim().toLowerCase();
   const match = trimmed.match(/(\d+)\s*(d|day|days|mo|month|months|w|week|weeks)/i);
   if (!match) return null;
-  const value = parseInt(match[1]);
-  const unit = match[2].toLowerCase();
+  const value = Number.parseInt(match[1]!);
+  const unit = match[2]!.toLowerCase();
   if (unit.startsWith('d')) return value;
   if (unit.startsWith('mo')) return value * 30;
   if (unit.startsWith('w')) return value * 7;
@@ -314,7 +322,7 @@ function extractRoleKeywords(role: string): string[] {
   for (const pattern of rolePatterns) {
     if (pattern.test(normalized)) {
       // Clean up the regex source to look nice
-      const cleanName = pattern.source.replace(/\\b/g, '').replace(/\\/g, '').replace(/\[.*?\]/g, '');
+      const cleanName = pattern.source.replaceAll('\\b', '').replaceAll('\\', '').replaceAll(/\[.*?\]/g, '');
       keywords.push(cleanName);
     }
   }
@@ -324,23 +332,53 @@ function extractRoleKeywords(role: string): string[] {
 /**
  * Checks if a job title passes the user's preference filters.
  */
-function matchesPreferences(role: string, prefs: UserPreferences): boolean {
-  const normalized = role.toLowerCase();
+function matchesPreferences(role: string, location: string, prefs: UserPreferences): boolean {
+  const normalizedRole = role.toLowerCase();
+  const normalizedLocation = location.toLowerCase();
   
-  // 1. Check Rejections first (Strict filter)
+  if (isRejected(normalizedRole, normalizedLocation, prefs)) {
+    return false;
+  }
+  
+  return isAccepted(normalizedRole, normalizedLocation, prefs);
+}
+
+function isRejected(role: string, location: string, prefs: UserPreferences): boolean {
   for (const rejected of prefs.rejectedTitles) {
-    if (normalized.includes(rejected.toLowerCase())) return false;
+    if (role.includes(rejected.toLowerCase())) return true;
   }
-  
-  // 2. If Accepted list is empty, allow everything (that wasn't rejected)
-  if (prefs.acceptedTitles.size === 0) return true;
-  
-  // 3. If Accepted list exists, must match at least one
-  for (const accepted of prefs.acceptedTitles) {
-    if (normalized.includes(accepted.toLowerCase())) return true;
+  for (const rejected of prefs.rejectedLocations) {
+    if (location.includes(rejected.toLowerCase())) return true;
   }
-  
   return false;
+}
+
+function isAccepted(role: string, location: string, prefs: UserPreferences): boolean {
+  // Check Role Acceptance
+  let roleMatch = true;
+  if (prefs.acceptedTitles.size > 0) {
+    roleMatch = false;
+    for (const accepted of prefs.acceptedTitles) {
+      if (role.includes(accepted.toLowerCase())) {
+        roleMatch = true;
+        break;
+      }
+    }
+  }
+
+  // Check Location Acceptance
+  let locationMatch = true;
+  if (prefs.acceptedLocations.size > 0) {
+    locationMatch = false;
+    for (const accepted of prefs.acceptedLocations) {
+      if (location.includes(accepted.toLowerCase())) {
+        locationMatch = true;
+        break;
+      }
+    }
+  }
+  
+  return roleMatch && locationMatch;
 }
 
 function sortJobsByDate(jobs: JobListing[], order: "newest" | "oldest"): JobListing[] {
@@ -407,7 +445,7 @@ async function exportToCSV(jobs: JobListing[], filename: string): Promise<void> 
   
   const headers = "Company,Role,Location,Terms,Age,Application Link,Source\n";
   const rows = jobs.map(job => {
-    const escape = (str: string) => `"${str.replace(/"/g, '""')}"`;
+    const escape = (str: string) => `"${str.replaceAll('"', '""')}"`;
     return [
       escape(job.company),
       escape(job.role),
@@ -472,7 +510,7 @@ function analyzeJobs(jobs: JobListing[]): void {
   });
   
   // Calculate average age
-  const ages = jobs.map(j => parseAgeInDays(j.age)).filter(a => a !== null) as number[];
+  const ages = jobs.map(j => parseAgeInDays(j.age)).filter(a => a !== null);
   const avgAge = ages.length > 0 ? Math.round(ages.reduce((a, b) => a + b, 0) / ages.length) : 0;
   
   // Top 5 of each
@@ -539,7 +577,7 @@ async function performUndo(): Promise<boolean> {
   
   // Restore jobs by removing from processed and adding back to unprocessed
   const processedData = await loadProcessedJobs();
-  const db = await loadJobsDatabase();
+  await loadJobsDatabase();
   
   // Remove from processed
   lastUndoOperation.links.forEach(link => {
@@ -570,12 +608,12 @@ async function saveFilterPreset(name: string, prefs: UserPreferences): Promise<v
     name,
     acceptedTitles: Array.from(prefs.acceptedTitles),
     rejectedTitles: Array.from(prefs.rejectedTitles),
+    acceptedLocations: Array.from(prefs.acceptedLocations),
+    rejectedLocations: Array.from(prefs.rejectedLocations),
     createdAt: new Date().toISOString(),
   };
   
-  if (!prefs.presets) {
-    prefs.presets = [];
-  }
+  prefs.presets ??= [];
   
   // Replace if exists
   const existingIndex = prefs.presets.findIndex(p => p.name === name);
@@ -608,6 +646,8 @@ async function loadFilterPreset(name: string): Promise<UserPreferences | null> {
   
   prefs.acceptedTitles = new Set(preset.acceptedTitles);
   prefs.rejectedTitles = new Set(preset.rejectedTitles);
+  prefs.acceptedLocations = new Set(preset.acceptedLocations || []);
+  prefs.rejectedLocations = new Set(preset.rejectedLocations || []);
   
   await saveUserPreferences(prefs);
   console.log(chalk.green(`\\n✓ Loaded filter preset: "${name}"`));
@@ -629,7 +669,10 @@ async function listFilterPresets(): Promise<void> {
   console.log("\\n" + chalk.bold.blue("Saved Filter Presets:"));
   prefs.presets.forEach((preset, idx) => {
     console.log(chalk.cyan(`  ${idx + 1}. ${chalk.bold(preset.name)}`));
-    console.log(chalk.gray(`     Accepted: ${preset.acceptedTitles.length}, Rejected: ${preset.rejectedTitles.length}`));
+    console.log(chalk.gray(`     Titles: +${preset.acceptedTitles.length}/-${preset.rejectedTitles.length}`));
+    if (preset.acceptedLocations && (preset.acceptedLocations.length > 0 || preset.rejectedLocations.length > 0)) {
+      console.log(chalk.gray(`     Locations: +${preset.acceptedLocations.length}/-${preset.rejectedLocations.length}`));
+    }
     console.log(chalk.gray(`     Created: ${new Date(preset.createdAt).toLocaleDateString()}`));
   });
   console.log("");
@@ -743,6 +786,116 @@ async function promptForTitlePreferences(jobs: JobListing[]): Promise<UserPrefer
   return prefs;
 }
 
+/**
+ * Analyzes jobs and presents interactive location selection to user
+ */
+async function promptForLocationPreferences(jobs: JobListing[]): Promise<UserPreferences> {
+  const prefs = await loadUserPreferences();
+  
+  // Extract and count locations (simple normalization)
+  const locationCounts = new Map<string, number>();
+  for (const job of jobs) {
+    // Split by comma to get city/state parts, or just use the whole string
+    // A lot of locations are "City, State" or "Remote"
+    // Let's try to capture "Remote", "City, State", "Country"
+    const loc = job.location.trim();
+    locationCounts.set(loc, (locationCounts.get(loc) || 0) + 1);
+    
+    // Also add state/country if available? 
+    // For now, let's stick to the full string to avoid over-complicating
+  }
+  
+  // Sort by frequency
+  const sortedLocations = Array.from(locationCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 25); // Top 25 most common
+  
+  if (sortedLocations.length === 0) {
+    return prefs;
+  }
+  
+  console.log("\n" + chalk.cyan("═".repeat(60)));
+  console.log(chalk.bold.cyan("🌍  LOCATION FILTER CONFIGURATION"));
+  console.log(chalk.cyan("═".repeat(60)));
+  console.log(chalk.white(`Found ${chalk.bold.yellow(sortedLocations.length)} common locations\n`));
+  
+  // Show current preferences
+  if (prefs.acceptedLocations.size > 0 || prefs.rejectedLocations.size > 0) {
+    console.log(chalk.bold.white("Current Location Filters:"));
+    if (prefs.acceptedLocations.size > 0) {
+      console.log(chalk.green(`  ✓ Accepted: ${Array.from(prefs.acceptedLocations).join(', ')}`));
+    }
+    if (prefs.rejectedLocations.size > 0) {
+      console.log(chalk.red(`  ✗ Rejected: ${Array.from(prefs.rejectedLocations).join(', ')}`));
+    }
+    console.log("");
+  }
+  
+  // Ask if user wants to update
+  const shouldUpdate = await confirm({
+    message: "Update location filters?",
+    default: false,
+  });
+  
+  if (!shouldUpdate) {
+    return prefs;
+  }
+  
+  // Create choices with frequency counts
+  const choices = sortedLocations.map(([loc, count]) => ({
+    name: `${loc} (${count} jobs)`,
+    value: loc,
+    checked: false,
+  }));
+  
+  console.log(chalk.gray("\n💡 Tip: Use ") + chalk.bold.white("↑/↓") + chalk.gray(" to navigate, ") + chalk.bold.white("Space") + chalk.gray(" to select, ") + chalk.bold.white("Enter") + chalk.gray(" to confirm\n"));
+  
+  // ACCEPTED LOCATIONS - Multi-select
+  const acceptedChoices = choices.map(c => ({
+    ...c,
+    checked: prefs.acceptedLocations.has(c.value),
+  }));
+  
+  const acceptedLocations = await checkbox({
+    message: "Select locations to ACCEPT (leave empty to accept all):",
+    choices: acceptedChoices,
+    pageSize: 15,
+  });
+  
+  // REJECTED LOCATIONS - Multi-select
+  const rejectedChoices = choices.map(c => ({
+    ...c,
+    checked: prefs.rejectedLocations.has(c.value),
+  }));
+  
+  const rejectedLocations = await checkbox({
+    message: "Select locations to REJECT (these will be filtered out):",
+    choices: rejectedChoices,
+    pageSize: 15,
+  });
+  
+  // Update preferences
+  prefs.acceptedLocations = new Set(acceptedLocations);
+  prefs.rejectedLocations = new Set(rejectedLocations);
+  
+  await saveUserPreferences(prefs);
+  
+  // Show summary
+  console.log("\n" + chalk.green("─".repeat(60)));
+  console.log(chalk.bold.green("✓ Location Filters Updated:"));
+  if (acceptedLocations.length > 0) {
+    console.log(chalk.green(`  ✓ Accepting: `) + chalk.white(acceptedLocations.join(', ')));
+  } else {
+    console.log(chalk.green(`  ✓ Accepting: `) + chalk.yellow(`ALL (no whitelist)`));
+  }
+  if (rejectedLocations.length > 0) {
+    console.log(chalk.red(`  ✗ Rejecting: `) + chalk.white(rejectedLocations.join(', ')));
+  }
+  console.log(chalk.green("─".repeat(60)) + "\n");
+  
+  return prefs;
+}
+
 // --- CORE ACTIONS ---
 
 async function updateAllSources(): Promise<void> {
@@ -754,6 +907,13 @@ async function updateAllSources(): Promise<void> {
   try {
     const count = await scrapeJobs();
     spinner.succeed(`Scraped ${chalk.bold.green(count)} jobs into database.`);
+    
+    // After scraping, prompt for filters
+    const db = await loadJobsDatabase();
+    if (db.unprocessed.length > 0) {
+      await promptForTitlePreferences(db.unprocessed);
+      await promptForLocationPreferences(db.unprocessed);
+    }
   } catch (e) {
     spinner.fail(`Scraping failed: ${e}`);
   }
@@ -781,6 +941,204 @@ async function markJobsAsProcessed(links: string[]): Promise<void> {
 /**
  * Main application loop with advanced features
  */
+async function handleBatchAction(
+  answer: string,
+  batch: JobListing[],
+  db: JobsDatabase,
+  startIndex: number,
+  rl: readline.Interface
+): Promise<{ startIndex: number; shouldExit: boolean }> {
+  if (answer >= '1' && answer <= '5') {
+    return handleMarkSingle(answer, batch, db, startIndex);
+  }
+  if (answer === 's' || answer === 'skip') {
+    return handleSkip(db, startIndex);
+  }
+  if (answer === 'a' || answer === 'all') {
+    return handleMarkAll(batch, db, startIndex);
+  }
+  if (answer.startsWith('p')) {
+    return handlePreview(answer, batch, startIndex);
+  }
+  if (answer === 'u' || answer === 'undo') {
+    return handleUndo(db, startIndex);
+  }
+  if (answer === '/' || answer === 'search') {
+    return handleSearch(db, startIndex, rl);
+  }
+  if (answer === 'q' || answer === 'quit') {
+    return handleQuit(db, startIndex);
+  }
+  if (answer === 'm' || answer === 'mark') {
+    return handleMarkBatch(batch, db, startIndex);
+  }
+  if (answer === 'n' || answer === 'next' || answer === 'no') {
+    return handleNext(db, startIndex);
+  }
+  if (answer.startsWith('y') || answer === 'yes') {
+    return handleOpen(batch, db, startIndex, rl);
+  }
+  
+  console.log(chalk.yellow("\n⚠ Invalid command. Try: y/n/m/q or 1-5/s/a/p#/u/"));
+  return { startIndex, shouldExit: false };
+}
+
+async function handleMarkSingle(answer: string, batch: JobListing[], db: JobsDatabase, startIndex: number) {
+  const jobIndex = Number.parseInt(answer) - 1;
+  if (jobIndex < batch.length) {
+    const job = batch[jobIndex];
+    if (!job) return { startIndex, shouldExit: false };
+    const links = [job.applicationLink];
+    saveUndoOperation('mark_single', links);
+    await markJobsAsProcessed(links);
+    console.log(chalk.green(`\n✓ Marked job #${startIndex + jobIndex + 1}: ${job.company} - ${job.role}`));
+    if (currentSession) currentSession.jobsMarked++;
+    const freshDb = await loadJobsDatabase();
+    db.unprocessed = freshDb.unprocessed;
+    return { startIndex, shouldExit: false };
+  }
+  console.log(chalk.yellow(`\n⚠ Invalid job number. This batch has ${batch.length} jobs.`));
+  return { startIndex, shouldExit: false };
+}
+
+async function handleSkip(db: JobsDatabase, startIndex: number) {
+  const newIndex = startIndex + CONFIG.BATCH_SIZE;
+  db.currentIndex = newIndex;
+  await saveJobsDatabase(db);
+  console.log(chalk.cyan("\n→ Skipped batch"));
+  if (currentSession) currentSession.batchesProcessed++;
+  return { startIndex: newIndex, shouldExit: false };
+}
+
+async function handleMarkAll(batch: JobListing[], db: JobsDatabase, startIndex: number) {
+  const links = batch.map(j => j.applicationLink);
+  saveUndoOperation('mark_batch', links);
+  await markJobsAsProcessed(links);
+  console.log(chalk.bold.green(`\n✓ Marked all ${batch.length} jobs as processed!`));
+  if (currentSession) {
+    currentSession.jobsMarked += batch.length;
+    currentSession.batchesProcessed++;
+  }
+  const freshDb = await loadJobsDatabase();
+  db.unprocessed = freshDb.unprocessed;
+  return { startIndex, shouldExit: false };
+}
+
+async function handlePreview(answer: string, batch: JobListing[], startIndex: number) {
+  const numStr = answer.substring(1).trim();
+  const jobIndex = Number.parseInt(numStr) - 1;
+  if (!Number.isNaN(jobIndex) && jobIndex >= 0 && jobIndex < batch.length) {
+    const job = batch[jobIndex];
+    if (job) {
+      console.log("\n" + chalk.bold.blue("═".repeat(60)));
+      console.log(chalk.bold.cyan("📋 JOB PREVIEW"));
+      console.log(chalk.bold.blue("═".repeat(60)));
+      console.log(chalk.white(`Company:  ${chalk.bold(job.company)}`));
+      console.log(chalk.white(`Role:     ${chalk.yellow(job.role)}`));
+      console.log(chalk.white(`Location: ${chalk.gray(job.location)}`));
+      console.log(chalk.white(`Terms:    ${chalk.gray(job.terms)}`));
+      console.log(chalk.white(`Age:      ${chalk.green(getRelativeTime(job.age))}`));
+      console.log(chalk.white(`Link:     ${chalk.cyan(job.applicationLink)}`));
+      console.log(chalk.white(`Source:   ${chalk.dim(job.source)}`));
+      console.log(chalk.bold.blue("═".repeat(60)));
+    }
+  } else {
+    console.log(chalk.yellow("\n⚠ Invalid job number for preview"));
+  }
+  return { startIndex, shouldExit: false };
+}
+
+async function handleUndo(db: JobsDatabase, startIndex: number) {
+  await performUndo();
+  const freshDb = await loadJobsDatabase();
+  db.unprocessed = freshDb.unprocessed;
+  return { startIndex, shouldExit: false };
+}
+
+async function handleSearch(db: JobsDatabase, startIndex: number, rl: readline.Interface) {
+  const query = await rl.question(chalk.cyan("\nSearch (company or role): "));
+  const searchTerm = query.toLowerCase();
+  const filteredJobs = db.unprocessed.filter(job => 
+    job.company.toLowerCase().includes(searchTerm) || 
+    job.role.toLowerCase().includes(searchTerm)
+  );
+  
+  if (filteredJobs.length === 0) {
+    console.log(chalk.yellow(`\n⚠ No jobs found matching "${query}"`));
+  } else {
+    console.log(chalk.green(`\n✓ Found ${filteredJobs.length} jobs matching "${query}":`));
+    filteredJobs.slice(0, 10).forEach((job, idx) => {
+      console.log(chalk.white(`  ${idx + 1}. ${chalk.bold(job.company)} - ${chalk.yellow(job.role)}`));
+    });
+    if (filteredJobs.length > 10) {
+      console.log(chalk.gray(`  ... and ${filteredJobs.length - 10} more`));
+    }
+  }
+  return { startIndex, shouldExit: false };
+}
+
+async function handleQuit(db: JobsDatabase, startIndex: number) {
+  db.currentIndex = startIndex;
+  await saveJobsDatabase(db);
+  showSessionSummary();
+  console.log(chalk.green("\n👋 Goodbye!\n"));
+  return { startIndex, shouldExit: true };
+}
+
+async function handleMarkBatch(batch: JobListing[], db: JobsDatabase, startIndex: number) {
+  const links = batch.map((job) => job.applicationLink);
+  saveUndoOperation('mark_batch', links);
+  await markJobsAsProcessed(links);
+  console.log(chalk.bold.green("\n✓ Batch marked as processed!"));
+  if (currentSession) {
+    currentSession.jobsMarked += batch.length;
+    currentSession.batchesProcessed++;
+  }
+  const freshDb = await loadJobsDatabase();
+  db.unprocessed = freshDb.unprocessed;
+  return { startIndex, shouldExit: false };
+}
+
+async function handleNext(db: JobsDatabase, startIndex: number) {
+  const newIndex = startIndex + CONFIG.BATCH_SIZE;
+  db.currentIndex = newIndex;
+  await saveJobsDatabase(db);
+  if (currentSession) currentSession.batchesProcessed++;
+  return { startIndex: newIndex, shouldExit: false };
+}
+
+async function handleOpen(batch: JobListing[], db: JobsDatabase, startIndex: number, rl: readline.Interface) {
+  await Promise.all(
+    batch.map((job) => Bun.$`xdg-open ${job.applicationLink}`.nothrow())
+  );
+
+  const markAnswer = (
+    await rl.question(chalk.white("\nMark as processed? (y/n) "))
+  ).trim().toLowerCase();
+
+  if (markAnswer.startsWith('y')) {
+    const links = batch.map((job) => job.applicationLink);
+    saveUndoOperation('mark_batch', links);
+    await markJobsAsProcessed(links);
+    console.log(chalk.bold.green("\n✓ Batch processed!"));
+    if (currentSession) {
+      currentSession.jobsMarked += batch.length;
+      currentSession.batchesProcessed++;
+    }
+    const freshDb = await loadJobsDatabase();
+    db.unprocessed = freshDb.unprocessed;
+    return { startIndex, shouldExit: false };
+  } else {
+    const newIndex = startIndex + CONFIG.BATCH_SIZE;
+    db.currentIndex = newIndex;
+    await saveJobsDatabase(db);
+    return { startIndex: newIndex, shouldExit: false };
+  }
+}
+
+/**
+ * Main application loop with advanced features
+ */
 async function openJobsInBatches(): Promise<void> {
   const rl = readline.createInterface({ input, output });
 
@@ -797,9 +1155,7 @@ async function openJobsInBatches(): Promise<void> {
 
     // Use stored index
     let startIndex = db.currentIndex || 0;
-    if (startIndex === undefined || startIndex === null) {
-      startIndex = 0;
-    }
+    startIndex ??= 0;
     
     console.log("\n" + chalk.bold.blue("╔" + "═".repeat(58) + "╗"));
     console.log(chalk.bold.blue("║") + chalk.bold.cyan(" 💼  JOB APPLICATION QUEUE".padEnd(58)) + chalk.bold.blue("║"));
@@ -849,171 +1205,9 @@ async function openJobsInBatches(): Promise<void> {
         .trim()
         .toLowerCase();
 
-      // QUICK ACTIONS
-      
-      // 1-5: Mark specific job
-      if (answer >= '1' && answer <= '5') {
-        const jobIndex = parseInt(answer) - 1;
-        if (jobIndex < batch.length) {
-          const job = batch[jobIndex];
-          const links = [job.applicationLink];
-          saveUndoOperation('mark_single', links);
-          await markJobsAsProcessed(links);
-          console.log(chalk.green(`\n✓ Marked job #${startIndex + jobIndex + 1}: ${job.company} - ${job.role}`));
-          if (currentSession) currentSession.jobsMarked++;
-          const freshDb = await loadJobsDatabase();
-          db.unprocessed = freshDb.unprocessed;
-          continue;
-        } else {
-          console.log(chalk.yellow(`\n⚠ Invalid job number. This batch has ${batch.length} jobs.`));
-          continue;
-        }
-      }
-      
-      // s: Skip
-      if (answer === 's' || answer === 'skip') {
-        startIndex += CONFIG.BATCH_SIZE;
-        db.currentIndex = startIndex;
-        await saveJobsDatabase(db);
-        console.log(chalk.cyan("\n→ Skipped batch"));
-        if (currentSession) currentSession.batchesProcessed++;
-        continue;
-      }
-      
-      // a: Mark all
-      if (answer === 'a' || answer === 'all') {
-        const links = batch.map(j => j.applicationLink);
-        saveUndoOperation('mark_batch', links);
-        await markJobsAsProcessed(links);
-        console.log(chalk.bold.green(`\n✓ Marked all ${batch.length} jobs as processed!`));
-        if (currentSession) {
-          currentSession.jobsMarked += batch.length;
-          currentSession.batchesProcessed++;
-        }
-        const freshDb = await loadJobsDatabase();
-        db.unprocessed = freshDb.unprocessed;
-        continue;
-      }
-      
-      // p#: Preview
-      if (answer.startsWith('p')) {
-        const numStr = answer.substring(1).trim();
-        const jobIndex = parseInt(numStr) - 1;
-        if (!isNaN(jobIndex) && jobIndex >= 0 && jobIndex < batch.length) {
-          const job = batch[jobIndex];
-          console.log("\n" + chalk.bold.blue("═".repeat(60)));
-          console.log(chalk.bold.cyan("📋 JOB PREVIEW"));
-          console.log(chalk.bold.blue("═".repeat(60)));
-          console.log(chalk.white(`Company:  ${chalk.bold(job.company)}`));
-          console.log(chalk.white(`Role:     ${chalk.yellow(job.role)}`));
-          console.log(chalk.white(`Location: ${chalk.gray(job.location)}`));
-          console.log(chalk.white(`Terms:    ${chalk.gray(job.terms)}`));
-          console.log(chalk.white(`Age:      ${chalk.green(getRelativeTime(job.age))}`));
-          console.log(chalk.white(`Link:     ${chalk.cyan(job.applicationLink)}`));
-          console.log(chalk.white(`Source:   ${chalk.dim(job.source)}`));
-          console.log(chalk.bold.blue("═".repeat(60)));
-          continue;
-        } else {
-          console.log(chalk.yellow("\n⚠ Invalid job number for preview"));
-          continue;
-        }
-      }
-      
-      // u: Undo
-      if (answer === 'u' || answer === 'undo') {
-        await performUndo();
-        const freshDb = await loadJobsDatabase();
-        db.unprocessed = freshDb.unprocessed;
-        continue;
-      }
-      
-      // /: Search (basic implementation)
-      if (answer === '/' || answer === 'search') {
-        const query = await rl.question(chalk.cyan("\nSearch (company or role): "));
-        const searchTerm = query.toLowerCase();
-        const filteredJobs = db.unprocessed.filter(job => 
-          job.company.toLowerCase().includes(searchTerm) || 
-          job.role.toLowerCase().includes(searchTerm)
-        );
-        
-        if (filteredJobs.length === 0) {
-          console.log(chalk.yellow(`\n⚠ No jobs found matching "${query}"`));
-        } else {
-          console.log(chalk.green(`\n✓ Found ${filteredJobs.length} jobs matching "${query}":`));
-          filteredJobs.slice(0, 10).forEach((job, idx) => {
-            console.log(chalk.white(`  ${idx + 1}. ${chalk.bold(job.company)} - ${chalk.yellow(job.role)}`));
-          });
-          if (filteredJobs.length > 10) {
-            console.log(chalk.gray(`  ... and ${filteredJobs.length - 10} more`));
-          }
-        }
-        continue;
-      }
-
-      // q: Quit
-      if (answer === 'q' || answer === 'quit') {
-        db.currentIndex = startIndex;
-        await saveJobsDatabase(db);
-        showSessionSummary();
-        console.log(chalk.green("\n👋 Goodbye!\n"));
-        break;
-      }
-
-      // m: Mark batch
-      if (answer === 'm' || answer === 'mark') {
-        const links = batch.map((job) => job.applicationLink);
-        saveUndoOperation('mark_batch', links);
-        await markJobsAsProcessed(links);
-        console.log(chalk.bold.green("\n✓ Batch marked as processed!"));
-        if (currentSession) {
-          currentSession.jobsMarked += batch.length;
-          currentSession.batchesProcessed++;
-        }
-        const freshDb = await loadJobsDatabase();
-        db.unprocessed = freshDb.unprocessed;
-        continue; 
-      }
-
-      // n: Next
-      if (answer === 'n' || answer === 'next' || answer === 'no') {
-        startIndex += CONFIG.BATCH_SIZE;
-        db.currentIndex = startIndex;
-        await saveJobsDatabase(db);
-        if (currentSession) currentSession.batchesProcessed++;
-        continue;
-      }
-
-      // y: Yes, open
-      if (answer.startsWith('y') || answer === 'yes') {
-        await Promise.all(
-          batch.map((job) => Bun.$`xdg-open ${job.applicationLink}`.nothrow())
-        );
-
-        const markAnswer = (
-          await rl.question(chalk.white("\nMark as processed? (y/n) "))
-        ).trim().toLowerCase();
-
-        if (markAnswer.startsWith('y')) {
-          const links = batch.map((job) => job.applicationLink);
-          saveUndoOperation('mark_batch', links);
-          await markJobsAsProcessed(links);
-          console.log(chalk.bold.green("\n✓ Batch processed!"));
-          if (currentSession) {
-            currentSession.jobsMarked += batch.length;
-            currentSession.batchesProcessed++;
-          }
-          const freshDb = await loadJobsDatabase();
-          db.unprocessed = freshDb.unprocessed;
-        } else {
-          startIndex += CONFIG.BATCH_SIZE;
-          db.currentIndex = startIndex;
-          await saveJobsDatabase(db);
-        }
-        continue;
-      }
-      
-      // Invalid command
-      console.log(chalk.yellow("\n⚠ Invalid command. Try: y/n/m/q or 1-5/s/a/p#/u/"));
+      const result = await handleBatchAction(answer, batch, db, startIndex, rl);
+      if (result.shouldExit) break;
+      startIndex = result.startIndex;
     }
     
     if (startIndex >= db.unprocessed.length && db.unprocessed.length > 0) {
@@ -1076,6 +1270,8 @@ async function showStats(): Promise<void> {
   console.log(chalk.bold.magenta("║") + chalk.bold.white(" 🎯  FILTER PREFERENCES".padEnd(58)) + chalk.bold.magenta("║"));
   console.log(chalk.bold.magenta("║") + chalk.white(`  Accepted Keywords:   ${chalk.bold.green(prefs.acceptedTitles.size || 'All')}`).padEnd(67) + chalk.bold.magenta("║"));
   console.log(chalk.bold.magenta("║") + chalk.white(`  Rejected Keywords:   ${chalk.bold.red(prefs.rejectedTitles.size || 'None')}`).padEnd(67) + chalk.bold.magenta("║"));
+  console.log(chalk.bold.magenta("║") + chalk.white(`  Accepted Locations:  ${chalk.bold.green(prefs.acceptedLocations.size || 'All')}`).padEnd(67) + chalk.bold.magenta("║"));
+  console.log(chalk.bold.magenta("║") + chalk.white(`  Rejected Locations:  ${chalk.bold.red(prefs.rejectedLocations.size || 'None')}`).padEnd(67) + chalk.bold.magenta("║"));
   console.log(chalk.bold.magenta("╚" + "═".repeat(58) + "╝"));
   console.log("");
 }
@@ -1090,6 +1286,51 @@ async function resetData(): Promise<void> {
     console.log("Data reset.");
   }
   rl.close();
+}
+
+async function handleExportCommand(arg: string | undefined): Promise<void> {
+  if (!arg || !['csv', 'json'].includes(arg)) {
+    console.log(chalk.yellow("\nUsage: bun run job-manager.ts export <csv|json>"));
+    return;
+  }
+  const exportDb = await loadJobsDatabase();
+  if (exportDb.unprocessed.length === 0) {
+    console.log(chalk.yellow("No jobs to export. Run 'update' first."));
+    return;
+  }
+  const timestamp = new Date().toISOString().split('T')[0];
+  if (arg === 'csv') {
+    await exportToCSV(exportDb.unprocessed, `jobs_${timestamp}.csv`);
+  } else {
+    await exportToJSON(exportDb.unprocessed, `jobs_${timestamp}.json`);
+  }
+}
+
+async function handlePresetCommand(arg: string | undefined): Promise<void> {
+  if (!arg) {
+    await listFilterPresets();
+    return;
+  }
+  if (arg === 'list') {
+    await listFilterPresets();
+  } else if (arg === 'save') {
+    const name = process.argv[4];
+    if (!name) {
+      console.log(chalk.yellow("\nUsage: bun run job-manager.ts preset save <name>"));
+      return;
+    }
+    const prefs = await loadUserPreferences();
+    await saveFilterPreset(name, prefs);
+  } else if (arg === 'load') {
+    const name = process.argv[4];
+    if (!name) {
+      console.log(chalk.yellow("\nUsage: bun run job-manager.ts preset load <name>"));
+      return;
+    }
+    await loadFilterPreset(name);
+  } else {
+    console.log(chalk.yellow("\nUsage: bun run job-manager.ts preset <list|save|load> [name]"));
+  }
 }
 
 async function main() {
@@ -1111,7 +1352,7 @@ async function main() {
       break;
       
     case "insights":
-    case "analytics":
+    case "analytics": {
       const db = await loadJobsDatabase();
       if (db.unprocessed.length > 0) {
         analyzeJobs(db.unprocessed);
@@ -1119,50 +1360,14 @@ async function main() {
         console.log(chalk.yellow("No jobs to analyze. Run 'update' first."));
       }
       break;
+    }
       
     case "export":
-      if (!arg || !['csv', 'json'].includes(arg)) {
-        console.log(chalk.yellow("\nUsage: bun run job-manager.ts export <csv|json>"));
-        break;
-      }
-      const exportDb = await loadJobsDatabase();
-      if (exportDb.unprocessed.length === 0) {
-        console.log(chalk.yellow("No jobs to export. Run 'update' first."));
-        break;
-      }
-      const timestamp = new Date().toISOString().split('T')[0];
-      if (arg === 'csv') {
-        await exportToCSV(exportDb.unprocessed, `jobs_${timestamp}.csv`);
-      } else {
-        await exportToJSON(exportDb.unprocessed, `jobs_${timestamp}.json`);
-      }
+      await handleExportCommand(arg);
       break;
       
     case "preset":
-      if (!arg) {
-        await listFilterPresets();
-        break;
-      }
-      if (arg === 'list') {
-        await listFilterPresets();
-      } else if (arg === 'save') {
-        const name = process.argv[4];
-        if (!name) {
-          console.log(chalk.yellow("\nUsage: bun run job-manager.ts preset save <name>"));
-          break;
-        }
-        const prefs = await loadUserPreferences();
-        await saveFilterPreset(name, prefs);
-      } else if (arg === 'load') {
-        const name = process.argv[4];
-        if (!name) {
-          console.log(chalk.yellow("\nUsage: bun run job-manager.ts preset load <name>"));
-          break;
-        }
-        await loadFilterPreset(name);
-      } else {
-        console.log(chalk.yellow("\nUsage: bun run job-manager.ts preset <list|save|load> [name]"));
-      }
+      await handlePresetCommand(arg);
       break;
       
     case "reset": 
@@ -1174,4 +1379,4 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+await main();

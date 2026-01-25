@@ -45,8 +45,18 @@ db.run(`
     user_id INTEGER PRIMARY KEY,
     accepted_titles TEXT, -- JSON array
     rejected_titles TEXT, -- JSON array
+    accepted_locations TEXT, -- JSON array
+    rejected_locations TEXT, -- JSON array
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
 `);
+
+// Migration for existing databases
+try {
+  db.run("ALTER TABLE user_preferences ADD COLUMN accepted_locations TEXT");
+  db.run("ALTER TABLE user_preferences ADD COLUMN rejected_locations TEXT");
+} catch (e) {
+  // Columns likely already exist
+}
 
 export default db;
