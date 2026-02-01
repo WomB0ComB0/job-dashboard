@@ -75,7 +75,7 @@ export const app = new Elysia()
         // Get all jobs with status for this user
         // We filter by search and status in SQL for performance
         let sql = `
-          SELECT j.*, IFNULL(ujs.status, 'unprocessed') as status
+          SELECT j.*, IFNULL(ujs.status, 'unprocessed') as status, IFNULL(ujs.is_favorite, 0) as is_favorite
           FROM jobs j
           LEFT JOIN user_job_status ujs ON j.id = ujs.job_id AND ujs.user_id = ?
           WHERE (j.company LIKE ? OR j.role LIKE ? OR j.location LIKE ?)
@@ -83,8 +83,12 @@ export const app = new Elysia()
         const params: any[] = [userId, `%${search}%`, `%${search}%`, `%${search}%` ];
 
         if (statusFilter !== 'all') {
-          sql += ` AND IFNULL(ujs.status, 'unprocessed') = ?`;
-          params.push(statusFilter);
+          if (statusFilter === 'favorites') {
+            sql += ` AND IFNULL(ujs.is_favorite, 0) = 1`;
+          } else {
+            sql += ` AND IFNULL(ujs.status, 'unprocessed') = ?`;
+            params.push(statusFilter);
+          }
         }
 
         // We'll sort by preferential order (unprocessed first) and then date
@@ -125,7 +129,7 @@ export const app = new Elysia()
         const paginatedJobs = filteredJobs.slice(offset, offset + limit);
 
         return {
-          jobs: paginatedJobs,
+          jobs: paginatedJobs.map(j => ({ ...j, is_favorite: j.is_favorite === 1 })),
           total,
           page,
           totalPages: Math.ceil(total / limit)
@@ -134,6 +138,22 @@ export const app = new Elysia()
       .post('/jobs/scrape', async () => {
         const count = await scrapeJobs();
         return { success: true, count };
+      })
+      .patch('/jobs/:id/favorite', ({ params, body, user }) => {
+        const userId = (user as any).id;
+        const jobId = Number(params.id);
+        const { is_favorite } = body as { is_favorite: boolean };
+        
+        // Use 1 for true, 0 for false
+        const favoriteValue = is_favorite ? 1 : 0;
+
+        db.prepare(`
+          INSERT INTO user_job_status (user_id, job_id, status, is_favorite)
+          VALUES (?, ?, 'unprocessed', ?)
+          ON CONFLICT(user_id, job_id) DO UPDATE SET is_favorite = excluded.is_favorite, updated_at = CURRENT_TIMESTAMP
+        `).run(userId, jobId, favoriteValue);
+        
+        return { success: true };
       })
       .patch('/jobs/:id/status', ({ params, body, user }) => {
         const userId = (user as any).id;

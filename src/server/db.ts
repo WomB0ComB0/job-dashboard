@@ -33,6 +33,7 @@ db.run(`
     user_id INTEGER NOT NULL,
     job_id INTEGER NOT NULL,
     status TEXT CHECK(status IN ('unprocessed', 'applied', 'skipped')) DEFAULT 'unprocessed',
+    is_favorite INTEGER DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, job_id),
     FOREIGN KEY (user_id) REFERENCES users(id),
@@ -55,6 +56,7 @@ db.run(`
 try {
   db.run("ALTER TABLE user_preferences ADD COLUMN accepted_locations TEXT");
   db.run("ALTER TABLE user_preferences ADD COLUMN rejected_locations TEXT");
+  db.run("ALTER TABLE user_job_status ADD COLUMN is_favorite INTEGER DEFAULT 0");
 } catch (e) {
   // Columns likely already exist
 }

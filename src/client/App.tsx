@@ -6,6 +6,7 @@ import {
     LogOut,
     RefreshCw,
     Settings,
+    Star,
     Trash2,
     XCircle
 } from 'lucide-react';
@@ -102,6 +103,17 @@ function App() {
   const handleStatusUpdate = async (id: number, status: string) => {
     await api.patch(`/jobs/${id}/status`, { status });
     setJobs(jobs.map(j => j.id === id ? { ...j, status } : j));
+  };
+
+  const handleFavoriteToggle = async (id: number, isFavorite: boolean) => {
+    await api.patch(`/jobs/${id}/favorite`, { is_favorite: isFavorite });
+    
+    setJobs(prevJobs => prevJobs.map(j => j.id === id ? { ...j, is_favorite: isFavorite } : j));
+    
+    // If we are filtering by favorites and unfavorite the item, remove it immediately from view
+    if (statusFilter === 'favorites' && !isFavorite) {
+       setJobs(prevJobs => prevJobs.filter(j => j.id !== id));
+    }
   };
 
   const handleScrape = async () => {
@@ -245,6 +257,7 @@ function App() {
                   }}
                 >
                   <option value="all">All Status</option>
+                  <option value="favorites">Favorites</option>
                   <option value="unprocessed">Unprocessed</option>
                   <option value="applied">Applied</option>
                   <option value="skipped">Skipped</option>
@@ -284,7 +297,14 @@ function App() {
                     </div>
                   </div>
                   
-                  <div className="flex items-center gap-2">
+                   <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => handleFavoriteToggle(job.id, !job.is_favorite)}
+                      className={`p-2 rounded-lg transition-colors ${job.is_favorite ? 'bg-yellow-600 text-white' : 'bg-slate-800 hover:bg-yellow-900/30 text-yellow-500'}`}
+                      title={job.is_favorite ? "Unfavorite" : "Favorite"}
+                    >
+                      <Star size={20} fill={job.is_favorite ? 'currentColor' : 'none'} />
+                    </button>
                     <button 
                       onClick={() => handleStatusUpdate(job.id, 'applied')}
                       className={`p-2 rounded-lg transition-colors ${job.status === 'applied' ? 'bg-green-600 text-white' : 'bg-slate-800 hover:bg-green-900/30 text-green-500'}`}

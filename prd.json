@@ -1,0 +1,14 @@
+{
+  "goal": "Allow users to \"star\" or \"favorite\" jobs to shortlist them without changing their primary status (Applied/Skipped).",
+  "user_stories": [
+    "As a user, I want to mark a job as a favorite so I can easily find my shortlist later.",
+    "As a user, I want to see a visual indicator (star icon) on favorited jobs.",
+    "As a user, when viewing the job list, I want a 'Favorites' filter option that shows only favorited jobs.",
+    "As a backend service, I must safely add a new `is_favorite` column to the `user_job_status` table without disrupting existing data."
+  ],
+  "success_metrics": [
+    "The database schema is updated successfully with the `is_favorite` column.",
+    "Users can toggle the favorite status via the UI, reflected instantly in the list.",
+    "Filtering by 'Favorites' correctly displays only favorited jobs."
+  ]
+}
