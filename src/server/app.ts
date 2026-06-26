@@ -182,7 +182,7 @@ export const app = new Elysia()
       .patch('/jobs/:id/favorite', ({ params, body, user }) => {
         const userId = (user as any).id;
         const jobId = Number(params.id);
-        const { is_favorite } = body as { is_favorite: boolean };
+        const { is_favorite } = (body || {}) as { is_favorite?: boolean };
         
         // Use 1 for true, 0 for false
         const favoriteValue = is_favorite ? 1 : 0;

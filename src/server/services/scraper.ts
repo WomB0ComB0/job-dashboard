@@ -415,7 +415,9 @@ export async function scrapeJobs() {
   const remotiveResults = await Promise.all(
     REMOTIVE_CATEGORIES.map(async (category) => {
       try {
-        const res = await fetch(`https://remotive.com/api/remote-jobs?category=${category}`);
+        const res = await fetch(`https://remotive.com/api/remote-jobs?category=${category}`, {
+          signal: AbortSignal.timeout(10_000),
+        });
         if (!res.ok) return [];
         const data = await res.json();
         return parseRemotiveJobs(data, 'https://remotive.com');
@@ -430,7 +432,9 @@ export async function scrapeJobs() {
   const greenhouseResults = await Promise.all(
     GREENHOUSE_COMPANIES.map(async ({ slug, name }) => {
       try {
-        const res = await fetch(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`);
+        const res = await fetch(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, {
+          signal: AbortSignal.timeout(10_000),
+        });
         if (!res.ok) return [];
         const data = await res.json();
         return parseGreenhouseJobs(data, name, `https://boards.greenhouse.io/${slug}`);

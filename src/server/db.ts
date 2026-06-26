@@ -109,8 +109,9 @@ function backfillParsedDates(): void {
   const update = db.prepare("UPDATE jobs SET parsed_date = ? WHERE id = ?");
   const tx = db.transaction((items: typeof rows) => {
     for (const row of items) {
-      const posted = postedDateFromAge(row.age_text, row.date_added);
-      if (posted) update.run(posted, row.id);
+      // Fall back to date_added when the age can't be parsed, so every row is set
+      // exactly once — otherwise unparseable rows re-run the backfill on every startup.
+      update.run(postedDateFromAge(row.age_text, row.date_added) ?? row.date_added, row.id);
     }
   });
   tx(rows);

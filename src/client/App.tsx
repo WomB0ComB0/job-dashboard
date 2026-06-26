@@ -92,7 +92,7 @@ function App() {
   const fetchData = async () => {
     try {
       if (view === 'jobs') {
-        const res = await api.get(`/jobs?page=${page}&status=${statusFilter}&type=${typeFilter}&time=${timeFilter}&search=${searchQuery}`);
+        const res = await api.get(`/jobs?page=${page}&status=${statusFilter}&type=${typeFilter}&time=${timeFilter}&search=${encodeURIComponent(searchQuery)}`);
         setJobs(res.data.jobs);
         setTotalPages(res.data.totalPages);
         setTotalJobs(res.data.total);
