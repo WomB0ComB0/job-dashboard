@@ -1,5 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import db from '../db';
+import { classifyEmploymentType, type EmploymentType } from '../utils/employmentType';
+import { parseAgeInDays } from '../utils/age';
 
 function logDebug(message: string) {
   appendFileSync('scraper_debug.log', message + '\n');
@@ -10,6 +12,7 @@ interface JobListing {
   role: string;
   location: string;
   terms: string;
+  employmentType: EmploymentType;
   applicationLink: string;
   age: string;
   dateAdded: string;
@@ -91,17 +94,33 @@ const CONFIG = {
   ],
 };
 
-function parseAgeInDays(ageText: string): number | null {
-  const trimmed = ageText.trim().toLowerCase();
-  const match = /(\d+)\s*(d|day|days|mo|month|months|w|week|weeks)/i.exec(trimmed);
-  if (!match || !match[1] || !match[2]) return null;
-  const value = Number.parseInt(match[1], 10);
-  const unit = match[2].toLowerCase();
-  if (unit.startsWith('d')) return value;
-  if (unit.startsWith('mo')) return value * 30;
-  if (unit.startsWith('w')) return value * 7;
-  return null;
-}
+// Remotive remote-job API categories (https://remotive.com/api/remote-jobs?category=...).
+const REMOTIVE_CATEGORIES = ['software-dev', 'data'];
+
+// Verified-live Greenhouse company boards (data/infra/SWE-heavy), for experienced
+// full-time roles. Each is fetched from boards-api.greenhouse.io/v1/boards/{slug}/jobs.
+const GREENHOUSE_COMPANIES: { slug: string; name: string }[] = [
+  { slug: 'databricks', name: 'Databricks' },
+  { slug: 'stripe', name: 'Stripe' },
+  { slug: 'mongodb', name: 'MongoDB' },
+  { slug: 'datadog', name: 'Datadog' },
+  { slug: 'anthropic', name: 'Anthropic' },
+  { slug: 'cloudflare', name: 'Cloudflare' },
+  { slug: 'elastic', name: 'Elastic' },
+  { slug: 'fivetran', name: 'Fivetran' },
+  { slug: 'amplitude', name: 'Amplitude' },
+  { slug: 'scaleai', name: 'Scale AI' },
+  { slug: 'airbnb', name: 'Airbnb' },
+  { slug: 'reddit', name: 'Reddit' },
+  { slug: 'pinterest', name: 'Pinterest' },
+  { slug: 'figma', name: 'Figma' },
+  { slug: 'instacart', name: 'Instacart' },
+  { slug: 'gitlab', name: 'GitLab' },
+  { slug: 'robinhood', name: 'Robinhood' },
+  { slug: 'coinbase', name: 'Coinbase' },
+  { slug: 'affirm', name: 'Affirm' },
+  { slug: 'twilio', name: 'Twilio' },
+];
 
 function isUSLocation(location: string): boolean {
   const usStates = /\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|PR|VI|GU|AS|MP)\b/i;
@@ -109,6 +128,22 @@ function isUSLocation(location: string): boolean {
   const nonUSPatterns = /\b(UK|United Kingdom|Canada|Germany|France|India|China|Japan|Australia|Europe|Asia|EMEA|London|Toronto|Vancouver|Berlin|Paris|Munich|Bangalore|Beijing|Shanghai|Tokyo|Sydney|Melbourne|Edinburgh|Banbury)\b/i;
   if (nonUSPatterns.test(location)) return false;
   return usStates.test(location) || usPatterns.test(location);
+}
+
+// Full US state names, to catch multi-location remote strings like
+// "Remote - California; Remote - New York" that the abbreviation check misses.
+const US_STATE_NAMES = /\b(Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming)\b/i;
+
+// Remote boards (Remotive, Greenhouse) express location as remote eligibility.
+// Accept only when there's a real US signal, or a purely generic remote string —
+// reject anything anchored to a non-US place (e.g. "Remote - Denmark").
+export function isUSOrRemote(location: string): boolean {
+  const loc = location || '';
+  if (isUSLocation(loc)) return true;
+  if (US_STATE_NAMES.test(loc)) return true;
+  if (/\b(worldwide|anywhere)\b/i.test(loc)) return true;
+  if (/^\s*remote\s*$/i.test(loc)) return true; // exactly "Remote", no geography
+  return false;
 }
 
 function parseHTMLTable(html: string, sourceUrl: string): JobListing[] {
@@ -154,15 +189,19 @@ function parseHTMLTable(html: string, sourceUrl: string): JobListing[] {
       if (!applicationLink && hrefMatches.length > 0 && hrefMatches[0]?.[1]) applicationLink = hrefMatches[0][1];
       if (!applicationLink) continue;
       
+      const terms = termsCell ? termsCell.replaceAll(/<[^>]*>/g, '').trim() : 'N/A';
       jobs.push({
         company: company || 'Unknown',
         role: role || 'Unknown Role',
         location,
-        terms: termsCell ? termsCell.replaceAll(/<[^>]*>/g, '').trim() : 'N/A',
+        terms,
+        employmentType: classifyEmploymentType(role, terms, sourceUrl),
         applicationLink,
         age,
         dateAdded: new Date().toISOString(),
         source: sourceUrl,
+        // Infer a posting date from the relative age so time-range filtering works.
+        parsedDate: ageInDays !== null ? new Date(Date.now() - ageInDays * 86_400_000) : undefined,
       });
     }
   }
@@ -215,6 +254,7 @@ function parseJobrightAITable(markdown: string, sourceUrl: string, year: number)
       role: role || 'Unknown Role',
       location,
       terms,
+      employmentType: classifyEmploymentType(role || '', terms, sourceUrl),
       applicationLink,
       age: dateCell,
       dateAdded: new Date().toISOString(),
@@ -239,6 +279,118 @@ async function fetchWithYearFallback(urlTemplate: string, startYear: number): Pr
   return { year };
 }
 
+/** Map Remotive's explicit job_type to our normalized employment type. */
+export function mapRemotiveType(jobType: string | undefined): EmploymentType | null {
+  if (!jobType) return null;
+  const t = jobType.toLowerCase();
+  if (t.includes('intern')) return 'internship';
+  if (t.includes('contract') || t.includes('freelance')) return 'contract';
+  if (t.includes('full')) return 'full-time';
+  return null; // part_time / other -> let the classifier decide
+}
+
+interface RemotiveJob {
+  title?: string;
+  company_name?: string;
+  candidate_required_location?: string;
+  job_type?: string;
+  url?: string;
+  publication_date?: string;
+}
+
+/** Parse the Remotive remote-jobs API response into listings (pure; no I/O). */
+export function parseRemotiveJobs(data: { jobs?: RemotiveJob[] }, sourceUrl: string): JobListing[] {
+  const jobs: JobListing[] = [];
+  const now = Date.now();
+  for (const j of data.jobs ?? []) {
+    const role = (j.title || '').trim();
+    const link = j.url;
+    const location = (j.candidate_required_location || 'Remote').trim();
+    if (!role || !link) continue;
+    if (!isUSOrRemote(location)) continue;
+
+    let age = '';
+    let parsedDate: Date | undefined;
+    if (j.publication_date) {
+      const pub = new Date(j.publication_date);
+      if (!Number.isNaN(pub.getTime())) {
+        const days = Math.floor((now - pub.getTime()) / 86_400_000);
+        if (days > CONFIG.MAX_AGE_DAYS) continue;
+        age = `${days}d`;
+        parsedDate = pub;
+      }
+    }
+
+    const terms = j.job_type || '';
+    const employmentType = mapRemotiveType(j.job_type) ?? classifyEmploymentType(role, terms, sourceUrl);
+    jobs.push({
+      company: (j.company_name || 'Unknown').trim(),
+      role,
+      location,
+      terms,
+      employmentType,
+      applicationLink: link,
+      age,
+      dateAdded: new Date().toISOString(),
+      source: sourceUrl,
+      parsedDate,
+    });
+  }
+  return jobs;
+}
+
+interface GreenhouseJob {
+  title?: string;
+  absolute_url?: string;
+  location?: { name?: string };
+  updated_at?: string;
+}
+
+/**
+ * Parse a Greenhouse company board into listings (pure; no I/O). Company career
+ * boards are overwhelmingly full-time, so we default the type to full-time while
+ * still letting explicit internship/contract titles win.
+ */
+export function parseGreenhouseJobs(
+  data: { jobs?: GreenhouseJob[] },
+  company: string,
+  sourceUrl: string
+): JobListing[] {
+  const jobs: JobListing[] = [];
+  const now = Date.now();
+  for (const j of data.jobs ?? []) {
+    const role = (j.title || '').trim();
+    const link = j.absolute_url;
+    const location = (j.location?.name || 'Remote').trim();
+    if (!role || !link) continue;
+    if (!isUSOrRemote(location)) continue;
+
+    let age = '';
+    let parsedDate: Date | undefined;
+    if (j.updated_at) {
+      const updated = new Date(j.updated_at);
+      if (!Number.isNaN(updated.getTime())) {
+        age = `${Math.max(0, Math.floor((now - updated.getTime()) / 86_400_000))}d`;
+        parsedDate = updated;
+      }
+    }
+
+    jobs.push({
+      company,
+      role,
+      location,
+      terms: 'Full-time',
+      employmentType: classifyEmploymentType(role, '', sourceUrl, 'full-time'),
+      applicationLink: link,
+      age,
+      dateAdded: new Date().toISOString(),
+      source: sourceUrl,
+      parsedDate,
+    });
+  }
+  return jobs;
+}
+
 export async function scrapeJobs() {
   const allJobs: JobListing[] = [];
   const year = CONFIG.BASE_YEAR;
@@ -259,9 +411,43 @@ export async function scrapeJobs() {
     }
   }
 
+  // Remotive (remote tech/data jobs; JSON API). Categories fetched in parallel.
+  const remotiveResults = await Promise.all(
+    REMOTIVE_CATEGORIES.map(async (category) => {
+      try {
+        const res = await fetch(`https://remotive.com/api/remote-jobs?category=${category}`, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return parseRemotiveJobs(data, 'https://remotive.com');
+      } catch (e) {
+        return [];
+      }
+    })
+  );
+  for (const jobs of remotiveResults) allJobs.push(...jobs);
+
+  // Greenhouse company boards (experienced full-time roles; JSON API). Fetched in parallel.
+  const greenhouseResults = await Promise.all(
+    GREENHOUSE_COMPANIES.map(async ({ slug, name }) => {
+      try {
+        const res = await fetch(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return parseGreenhouseJobs(data, name, `https://boards.greenhouse.io/${slug}`);
+      } catch (e) {
+        return [];
+      }
+    })
+  );
+  for (const jobs of greenhouseResults) allJobs.push(...jobs);
+
   const insertJob = db.prepare(`
-    INSERT OR IGNORE INTO jobs (company, role, location, terms, application_link, source, age_text, date_added, parsed_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO jobs (company, role, location, terms, employment_type, application_link, source, age_text, date_added, parsed_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const transaction = db.transaction((jobs: JobListing[]) => {
@@ -271,6 +457,7 @@ export async function scrapeJobs() {
         job.role,
         job.location,
         job.terms,
+        job.employmentType,
         job.applicationLink,
         job.source,
         job.age,

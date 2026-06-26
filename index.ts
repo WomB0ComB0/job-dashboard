@@ -1,7 +1,10 @@
 import index from "./index.html";
 import { app } from "./src/server/app";
 
+const port = Number(process.env.PORT) || 3000;
+
 Bun.serve({
+  port,
   routes: {
     "/": index,
   },
@@ -22,4 +25,4 @@ Bun.serve({
   development: true,
 });
 
-console.log("Server running on http://localhost:3000");
+console.log(`Server running on http://localhost:${port}`);
